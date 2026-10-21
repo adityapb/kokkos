@@ -738,9 +738,19 @@ struct CudaParallelLaunchImpl<
                                    const CudaInternal* cuda_instance) {
     if (!Impl::is_empty_launch(grid, block)) {
       // Prevent multiple threads to simultaneously set the cache configuration
-      // preference and launch the same kernel
+      // preference and launch the same kernel. Only the launches that touch
+      // shared state take the lock: a desired-occupancy policy caches its
+      // carveout preference in a static, and the global- and constant-memory
+      // mechanisms stage the functor through a per-instance or per-device
+      // buffer. The local-memory mechanism passes the functor as a kernel
+      // argument, so its launches from different host threads are independent
+      // and go without the lock.
+      constexpr bool launch_needs_lock =
+          LaunchMechanism != CudaLaunchMechanism::LocalMemory ||
+          DriverType::Policy::experimental_contains_desired_occupancy;
       static std::mutex mutex;
-      std::lock_guard<std::mutex> lock(mutex);
+      std::unique_lock<std::mutex> lock(mutex, std::defer_lock);
+      if constexpr (launch_needs_lock) lock.lock();
 
       Impl::check_shmem_request(cuda_instance, shmem);
 
