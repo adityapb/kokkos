@@ -574,7 +574,7 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
          FunctorTeamShmemSize<FunctorType>::value(m_functor, m_team_size));
     m_scratch_size[0]   = m_policy.scratch_size(0, m_team_size);
     m_scratch_size[1]   = m_policy.scratch_size(1, m_team_size);
-    m_scratch_locks     = internal_space_instance->m_scratch_locks;
+    m_scratch_locks     = nullptr;
     m_num_scratch_locks = internal_space_instance->m_num_scratch_locks;
 
     // Functor's reduce memory, team scan memory, and team shared memory depend
@@ -588,6 +588,7 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
       m_scratch_ptr[1] = nullptr;
     } else {
       m_scratch_pool_id = internal_space_instance->acquire_team_scratch_space();
+      m_scratch_locks   = internal_space_instance->scratch_locks();
       m_scratch_ptr[1]  = internal_space_instance->resize_team_scratch_space(
           m_scratch_pool_id,
           static_cast<std::int64_t>(m_scratch_size[1]) *
@@ -967,7 +968,7 @@ class ParallelReduce<CombinedFunctorReducerType,
                        arg_functor_reducer.get_functor(), m_team_size);
     m_scratch_size[0]   = m_shmem_size;
     m_scratch_size[1]   = m_policy.scratch_size(1, m_team_size);
-    m_scratch_locks     = internal_space_instance->m_scratch_locks;
+    m_scratch_locks     = nullptr;
     m_num_scratch_locks = internal_space_instance->m_num_scratch_locks;
     // Level-1 team scratch lives in a per-instance pool that is sized on first
     // use; with no level-1 scratch requested there is nothing to acquire, and
@@ -977,6 +978,7 @@ class ParallelReduce<CombinedFunctorReducerType,
       m_scratch_ptr[1] = nullptr;
     } else {
       m_scratch_pool_id = internal_space_instance->acquire_team_scratch_space();
+      m_scratch_locks   = internal_space_instance->scratch_locks();
       m_scratch_ptr[1]  = internal_space_instance->resize_team_scratch_space(
           m_scratch_pool_id,
           static_cast<std::int64_t>(m_scratch_size[1]) *

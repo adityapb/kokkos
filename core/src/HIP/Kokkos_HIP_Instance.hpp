@@ -328,6 +328,7 @@ class HIPInternal {
   size_type *stage_functor_for_execution(void const *driver,
                                          std::size_t const size) const;
   uint32_t impl_get_instance_id() const noexcept;
+  int32_t* scratch_locks();
   int acquire_team_scratch_space();
   // Resizing of team level 1 scratch
   void *resize_team_scratch_space(int scratch_pool_id, std::int64_t bytes,

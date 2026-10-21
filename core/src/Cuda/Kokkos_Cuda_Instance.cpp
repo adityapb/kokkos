@@ -247,7 +247,8 @@ CudaInternal::~CudaInternal() {
                                 m_team_scratch_current_size[i]);
   }
 
-  KOKKOS_IMPL_CUDA_SAFE_CALL((cuda_free_wrapper(m_scratch_locks)));
+  if (m_scratch_locks != nullptr)
+    KOKKOS_IMPL_CUDA_SAFE_CALL((cuda_free_wrapper(m_scratch_locks)));
 }
 
 int CudaInternal::verify_is_initialized(const char *const label) const {
@@ -302,26 +303,13 @@ CudaInternal::CudaInternal(cudaStream_t stream) : m_stream(stream) {
   // and scratch space for partial reduction values.
   // Allocate some initial space.  This will grow as needed.
 
-  {
-    // Maximum number of warps,
-    // at most one warp per thread in a warp for reduction.
-    auto const maxWarpCount =
-        std::min<size_t>(m_deviceProp.maxThreadsPerBlock / CudaTraits::WarpSize,
-                         CudaTraits::WarpSize);
-    size_t const reduce_block_count = maxWarpCount * Impl::CudaTraits::WarpSize;
-
-    (void)scratch_unified(16 * sizeof(size_type));
-    (void)scratch_flags(reduce_block_count * 2 * sizeof(size_type));
-    (void)scratch_space(reduce_block_count * 16 * sizeof(size_type));
-  }
-
-  m_num_scratch_locks          = concurrency();
-  void *scratch_locks_void_ptr = nullptr;
-  KOKKOS_IMPL_CUDA_SAFE_CALL((cuda_malloc_wrapper(
-      &scratch_locks_void_ptr, sizeof(int32_t) * m_num_scratch_locks)));
-  m_scratch_locks = static_cast<int32_t *>(scratch_locks_void_ptr);
-  KOKKOS_IMPL_CUDA_SAFE_CALL((cuda_memset_wrapper(
-      m_scratch_locks, 0, sizeof(int32_t) * m_num_scratch_locks)));
+  // The reduction scratch (flags, space, unified) and the team scratch lock
+  // array are allocated on first use, by scratch_flags() and friends and by
+  // scratch_locks(), not here: an instance that only launches parallel_for
+  // kernels then costs no device memory and no allocation calls, which matters
+  // for codes that wrap an instance around each of many streams.
+  m_num_scratch_locks = concurrency();
+  m_scratch_locks     = nullptr;
 }
 
 //----------------------------------------------------------------------------
@@ -411,6 +399,20 @@ Cuda::size_type *CudaInternal::scratch_functor(const std::size_t size) const {
   }
 
   return m_scratchFunctor;
+}
+
+int32_t *CudaInternal::scratch_locks() {
+  // Allocated by the first team launch that requests level-1 scratch.
+  std::scoped_lock<std::mutex> lock(m_mutexScratchSpace);
+  if (m_scratch_locks == nullptr) {
+    void *scratch_locks_void_ptr = nullptr;
+    KOKKOS_IMPL_CUDA_SAFE_CALL((cuda_malloc_wrapper(
+        &scratch_locks_void_ptr, sizeof(int32_t) * m_num_scratch_locks)));
+    m_scratch_locks = static_cast<int32_t *>(scratch_locks_void_ptr);
+    KOKKOS_IMPL_CUDA_SAFE_CALL((cuda_memset_wrapper(
+        m_scratch_locks, 0, sizeof(int32_t) * m_num_scratch_locks)));
+  }
+  return m_scratch_locks;
 }
 
 int CudaInternal::acquire_team_scratch_space() {

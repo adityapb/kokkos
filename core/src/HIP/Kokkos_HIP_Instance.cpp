@@ -169,29 +169,13 @@ HIPInternal::HIPInternal(hipStream_t stream) : m_stream(stream) {
   // Multiblock reduction uses scratch flags for counters
   // and scratch space for partial reduction values.
   // Allocate some initial space.  This will grow as needed.
-  {
-    // Maximum number of warps,
-    // at most one warp per thread in a warp for reduction.
-    unsigned int maxWarpCount =
-        m_deviceProp.maxThreadsPerBlock / Impl::HIPTraits::WarpSize;
-    if (Impl::HIPTraits::WarpSize < maxWarpCount) {
-      maxWarpCount = Impl::HIPTraits::WarpSize;
-    }
-
-    const unsigned reduce_block_count =
-        maxWarpCount * Impl::HIPTraits::WarpSize;
-
-    (void)scratch_flags(static_cast<size_t>(reduce_block_count * 2) *
-                        sizeof(size_type));
-    (void)scratch_space(static_cast<size_t>(reduce_block_count * 16) *
-                        sizeof(size_type));
-  }
-
+  // The reduction scratch (flags, space) and the team scratch lock array are
+  // allocated on first use, by scratch_flags() and friends and by
+  // scratch_locks(), not here: an instance that only launches parallel_for
+  // kernels then costs no device memory and no allocation calls, which matters
+  // for codes that wrap an instance around each of many streams.
   m_num_scratch_locks = concurrency();
-  KOKKOS_IMPL_HIP_SAFE_CALL(
-      hipMalloc(&m_scratch_locks, sizeof(int32_t) * m_num_scratch_locks));
-  KOKKOS_IMPL_HIP_SAFE_CALL(
-      hipMemset(m_scratch_locks, 0, sizeof(int32_t) * m_num_scratch_locks));
+  m_scratch_locks     = nullptr;
 }
 
 //----------------------------------------------------------------------------
@@ -277,6 +261,18 @@ Kokkos::HIP::size_type *HIPInternal::stage_functor_for_execution(
   return m_scratchFunctor;
 }
 
+int32_t *HIPInternal::scratch_locks() {
+  // Allocated by the first team launch that requests level-1 scratch.
+  std::scoped_lock<std::mutex> lock(m_mutexScratchSpace);
+  if (m_scratch_locks == nullptr) {
+    KOKKOS_IMPL_HIP_SAFE_CALL(
+        hipMalloc(&m_scratch_locks, sizeof(int32_t) * m_num_scratch_locks));
+    KOKKOS_IMPL_HIP_SAFE_CALL(
+        hipMemset(m_scratch_locks, 0, sizeof(int32_t) * m_num_scratch_locks));
+  }
+  return m_scratch_locks;
+}
+
 int HIPInternal::acquire_team_scratch_space() {
   int current_team_scratch = 0;
   int zero                 = 0;
@@ -353,7 +349,8 @@ HIPInternal::~HIPInternal() {
                                   m_team_scratch_current_size[i]);
   }
 
-  KOKKOS_IMPL_HIP_SAFE_CALL(hip_free_wrapper(m_scratch_locks));
+  if (m_scratch_locks != nullptr)
+    KOKKOS_IMPL_HIP_SAFE_CALL(hip_free_wrapper(m_scratch_locks));
 }
 
 int HIPInternal::m_maxThreadsPerSM = 0;
