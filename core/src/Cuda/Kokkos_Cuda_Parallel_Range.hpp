@@ -60,6 +60,23 @@ class ParallelFor<FunctorType, Kokkos::RangePolicy<Traits...>, Kokkos::Cuda> {
     const auto work_stride    = Member(blockDim.y) * gridDim.x;
     const Member work_end     = m_policy.end();
 
+    // execute() sizes the grid to cover the range whenever the device's grid
+    // limit allows, which is every launch but the largest: each thread then
+    // has at most one work item, and the body is run as a straight line with
+    // one bounds test instead of inside the loop below. The loop form keeps
+    // the body loop-carried and the compiler schedules it worse; measured on
+    // an A40, two short memory-bound kernels ran 49% and 10% slower in the
+    // loop form than as a straight line, which is what a hand-written kernel
+    // is. The condition is uniform over the launch, so no warp diverges on it.
+    if constexpr (batch_size == 1) {
+      if (work_stride >= work_end - m_policy.begin()) {
+        const Member iwork = m_policy.begin() + threadIdx.y +
+                             static_cast<Member>(blockDim.y) * blockIdx.x;
+        if (iwork < work_end) this->template exec_range<WorkTag>(iwork);
+        return;
+      }
+    }
+
     for (Member iwork = m_policy.begin() + threadIdx.y +
                         static_cast<Member>(blockDim.y) * blockIdx.x;
          iwork < work_end;

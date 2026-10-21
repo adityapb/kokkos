@@ -52,6 +52,19 @@ class ParallelFor<FunctorType, Kokkos::RangePolicy<Traits...>, Kokkos::HIP> {
     const auto work_stride    = Member(blockDim.y) * gridDim.x;
     const Member work_end     = m_policy.end();
 
+    // As in the CUDA backend: the grid covers the range on every launch but
+    // the largest, so each thread has at most one item and the body runs as a
+    // straight line with one bounds test rather than inside the loop below,
+    // which keeps it loop-carried and schedules worse. Uniform condition.
+    if constexpr (batch_size == 1) {
+      if (work_stride >= work_end - m_policy.begin()) {
+        const Member iwork = m_policy.begin() + threadIdx.y +
+                             static_cast<Member>(blockDim.y) * blockIdx.x;
+        if (iwork < work_end) this->template exec_range<WorkTag>(iwork);
+        return;
+      }
+    }
+
     for (Member iwork = m_policy.begin() + threadIdx.y +
                         static_cast<Member>(blockDim.y) * blockIdx.x;
          iwork < work_end;
