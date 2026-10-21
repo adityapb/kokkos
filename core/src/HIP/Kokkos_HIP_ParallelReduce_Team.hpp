@@ -347,7 +347,11 @@ class ParallelReduce<CombinedFunctorReducerType,
     m_scratch_size[1]   = m_policy.scratch_size(1, m_team_size);
     m_scratch_locks     = internal_space_instance->m_scratch_locks;
     m_num_scratch_locks = internal_space_instance->m_num_scratch_locks;
-    if (m_team_size <= 0) {
+    // Level-1 team scratch lives in a per-instance pool that is sized on first
+    // use; with no level-1 scratch requested there is nothing to acquire, and
+    // asking for 0 bytes would otherwise cost a device allocation call on every
+    // launch, because a pool slot's recorded size stays 0 after a 0-byte request.
+    if (m_team_size <= 0 || m_scratch_size[1] == 0) {
       m_scratch_ptr[1] = nullptr;
     } else {
       m_scratch_pool_id = internal_space_instance->acquire_team_scratch_space();

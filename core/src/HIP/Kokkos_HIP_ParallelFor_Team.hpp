@@ -133,7 +133,11 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>, HIP> {
     // Functor's reduce memory, team scan memory, and team shared memory depend
     // upon team size.
     m_scratch_ptr[0] = nullptr;
-    if (m_team_size <= 0) {
+    // Level-1 team scratch lives in a per-instance pool that is sized on first
+    // use; with no level-1 scratch requested there is nothing to acquire, and
+    // asking for 0 bytes would otherwise cost a device allocation call on every
+    // launch, because a pool slot's recorded size stays 0 after a 0-byte request.
+    if (m_team_size <= 0 || m_scratch_size[1] == 0) {
       m_scratch_ptr[1] = nullptr;
     } else {
       m_scratch_pool_id = internal_space_instance->acquire_team_scratch_space();
