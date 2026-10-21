@@ -14,6 +14,43 @@ SPDX-License-Identifier: (BSD-3-Clause)
 #define DESUL_HAVE_CUDA_ATOMICS_ASM
 
 #include <desul/atomics/cuda/CUDA_asm.hpp>
+#include <type_traits>
+
+namespace desul {
+namespace Impl {
+// unsigned long long on Volta and later. The inline-asm natives above (red.add / atom.add and the
+// min, max, sub forms) are instantiated for uint64_t, which on LP64 platforms is unsigned long, a
+// type distinct from unsigned long long, CUDA's own 64-bit atomic type and what user code usually
+// holds. A device_atomic_add on an unsigned long long then falls to the generic template, whose
+// inner device_atomic_fetch_add call is bound at that template's definition and never sees a native
+// overload, so every such add became a compare-and-swap loop (measured 78x slower than red.add on a
+// contended counter). These forward to the uint64_t natives where the two types are distinct and
+// vanish where they are the same type.
+#define DESUL_IMPL_CUDA_DEVICE_ATOMIC_OP_ULL(OP)                                                   \
+  template <class MemoryOrder, class MemoryScope, class T = unsigned long long,                    \
+            std::enable_if_t<!std::is_same<T, uint64_t>::value && sizeof(T) == sizeof(uint64_t),    \
+                             int> = 0>                                                             \
+  __device__ void device_atomic_##OP(unsigned long long* ptr, unsigned long long val,              \
+                                     MemoryOrder order, MemoryScope scope) {                       \
+    device_atomic_##OP(reinterpret_cast<uint64_t*>(ptr), static_cast<uint64_t>(val), order,        \
+                       scope);                                                                     \
+  }                                                                                                \
+  template <class MemoryOrder, class MemoryScope, class T = unsigned long long,                    \
+            std::enable_if_t<!std::is_same<T, uint64_t>::value && sizeof(T) == sizeof(uint64_t),    \
+                             int> = 0>                                                             \
+  __device__ unsigned long long device_atomic_fetch_##OP(                                          \
+      unsigned long long* ptr, unsigned long long val, MemoryOrder order, MemoryScope scope) {     \
+    return static_cast<unsigned long long>(device_atomic_fetch_##OP(                               \
+        reinterpret_cast<uint64_t*>(ptr), static_cast<uint64_t>(val), order, scope));             \
+  }
+DESUL_IMPL_CUDA_DEVICE_ATOMIC_OP_ULL(add)
+DESUL_IMPL_CUDA_DEVICE_ATOMIC_OP_ULL(sub)
+DESUL_IMPL_CUDA_DEVICE_ATOMIC_OP_ULL(min)
+DESUL_IMPL_CUDA_DEVICE_ATOMIC_OP_ULL(max)
+#undef DESUL_IMPL_CUDA_DEVICE_ATOMIC_OP_ULL
+}  // namespace Impl
+}  // namespace desul
+
 
 #else
 
@@ -123,6 +160,8 @@ DESUL_IMPL_CUDA_DEVICE_ATOMIC_FETCH_OP(fetch_dec_mod, unsigned int)
 #undef DESUL_IMPL_CUDA_DEVICE_ATOMIC_FETCH_OP_FLOATING_POINT
 #undef DESUL_IMPL_CUDA_DEVICE_ATOMIC_FETCH_OP_INTEGRAL
 #undef DESUL_IMPL_CUDA_DEVICE_ATOMIC_FETCH_OP
+
+
 
 }  // namespace Impl
 }  // namespace desul
